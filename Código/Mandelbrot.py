@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QInputDialog, QColorDialog, QComboBox, QFileDialog
+from PyQt6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QInputDialog, QColorDialog, QComboBox, QFileDialog, QSpinBox, QSlider
 from PyQt6.QtGui import QPixmap, QImage, QColor
 from PyQt6.QtCore import Qt, QPoint
 import numpy as np
@@ -9,7 +9,7 @@ import math
 
 # Configuración de la GPU
 @cuda.jit
-def mandelbrot_kernel(image, width, height, zoom, offset_x, offset_y, max_iter, palette, palette_size, color_mode):
+def mandelbrot_kernel_with_aura(image, width, height, zoom, offset_x, offset_y, max_iter, palette, palette_size, color_mode, aura_intensity):
     x, y = cuda.grid(2)
     if x >= width or y >= height:
         return
@@ -31,94 +31,128 @@ def mandelbrot_kernel(image, width, height, zoom, offset_x, offset_y, max_iter, 
         iter_count += 1
         z_mag_squared = z_real * z_real + z_imag * z_imag
 
-    # Diferentes modos de coloración
+    # Si está dentro del conjunto, color negro
+    if iter_count == max_iter:
+        image[y, x, 0] = 0
+        image[y, x, 1] = 0
+        image[y, x, 2] = 0
+        return
+        
+    # Calculamos un valor suave para mejor transición de colores
+    smooth_value = iter_count
+    if iter_count < max_iter:
+        # Aproximación suave basada en la iteración final
+        smooth_value = iter_count + 1.0 - min(1.0, z_mag_squared / 4.0)
+        
+    # Factor de aura: más cercano al borde = más brillante
+    aura_factor = 0.0
+    if z_mag_squared > 0.0:
+        # Calcular qué tan cerca estamos del borde del conjunto
+        edge_proximity = min(1.0, z_mag_squared / 4.0)  # Valor entre 0 y 1
+        
+        # Factor de brillo del aura - más fuerte cerca del borde, controlado por intensidad
+        aura_factor = edge_proximity * aura_intensity
+    
     if color_mode == 0:  # Modo paleta simple
-        # Si está dentro del conjunto, color negro
-        if iter_count == max_iter:
-            image[y, x, 0] = 0
-            image[y, x, 1] = 0
-            image[y, x, 2] = 0
-        else:
-            # Usar la paleta cíclicamente
-            color_index = iter_count % palette_size
-            image[y, x, 0] = palette[color_index][0]
-            image[y, x, 1] = palette[color_index][1]
-            image[y, x, 2] = palette[color_index][2]
+        # Usar la paleta cíclicamente
+        color_index = int(iter_count % palette_size)
+        r = palette[color_index][0]
+        g = palette[color_index][1]
+        b = palette[color_index][2]
+        
+        # Aplicar aura (aumentar brillo cerca de los bordes)
+        r = min(255, int(r + (255 - r) * aura_factor))
+        g = min(255, int(g + (255 - g) * aura_factor))
+        b = min(255, int(b + (255 - b) * aura_factor))
     else:  # Modo suave
-        # Si está dentro del conjunto, color negro
-        if iter_count == max_iter:
-            image[y, x, 0] = 0
-            image[y, x, 1] = 0
-            image[y, x, 2] = 0
+        # Mapear a la paleta con interpolación
+        t = smooth_value / max_iter
+        index_float = t * (palette_size - 1)
+        index = int(index_float)
+        t_interp = index_float - index
+        
+        # Interpolación entre colores de la paleta
+        if index < palette_size - 1:
+            r = int(palette[index][0] * (1.0 - t_interp) + palette[index + 1][0] * t_interp)
+            g = int(palette[index][1] * (1.0 - t_interp) + palette[index + 1][1] * t_interp)
+            b = int(palette[index][2] * (1.0 - t_interp) + palette[index + 1][2] * t_interp)
         else:
-            # Coloración suave sin usar log2
-            # Una aproximación suave que no requiere log2
-            smooth_value = iter_count
-            if iter_count < max_iter:
-                # Una aproximación a log2(z_mag) / log2(2) sin usar log2 directamente
-                # Usa una aproximación basada en la iteración final
-                smooth_value = iter_count + 1.0 - min(1.0, z_mag_squared / 4.0)
-                
-            t = smooth_value / max_iter
+            r = palette[index][0]
+            g = palette[index][1]
+            b = palette[index][2]
             
-            # Mapear a la paleta
-            index_float = t * (palette_size - 1)
-            index = int(index_float)
-            t_interp = index_float - index
-            
-            if index < palette_size - 1:
-                r = int(palette[index][0] * (1 - t_interp) + palette[index + 1][0] * t_interp)
-                g = int(palette[index][1] * (1 - t_interp) + palette[index + 1][1] * t_interp)
-                b = int(palette[index][2] * (1 - t_interp) + palette[index + 1][2] * t_interp)
-            else:
-                r, g, b = palette[index]
-                
-            image[y, x, 0] = r
-            image[y, x, 1] = g
-            image[y, x, 2] = b
-
+        # Aplicar aura con un enfoque más sutil para preservar los degradados
+        # Usamos multiplicación en lugar de suma para mantener los tonos de color
+        r = min(255, int(r * (1.0 + aura_factor * 0.7)))
+        g = min(255, int(g * (1.0 + aura_factor * 0.7)))
+        b = min(255, int(b * (1.0 + aura_factor * 0.7)))
+    
+    # Asignar color final a la imagen
+    image[y, x, 0] = r
+    image[y, x, 1] = g
+    image[y, x, 2] = b
 
 class MandelbrotGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Fractal de Mandelbrot GPU - Colores Avanzados")
-        self.setGeometry(100, 100, 800, 600)
+        self.setWindowTitle("Conjunto de Mandelbrot")
+        self.setGeometry(100, 100, 900, 750)
 
+        # Área de visualización del fractal
         self.label = QLabel(self)
-        self.label.setGeometry(0, 0, 800, 600)
+        self.label.setGeometry(0, 0, 900, 700)
 
-        self.button_update = QPushButton("Actualizar", self)
-        self.button_update.setGeometry(20, 550, 100, 30)
-        self.button_update.clicked.connect(self.ask_iterations)
+        # Reemplazar el botón "Actualizar" con un QSpinBox
+        self.iterations_spinbox = QSpinBox(self)
+        self.iterations_spinbox.setGeometry(20, 710, 100, 30)  # Posición: (x, y, ancho, alto)
+        self.iterations_spinbox.setRange(1, 5000)  # Rango de iteraciones (mínimo 10, máximo 5000)
+        self.iterations_spinbox.setValue(200)  # Valor inicial
+        self.iterations_spinbox.valueChanged.connect(self.update_iterations)  # Conectar al método de actualización
 
         self.button_zoom_in = QPushButton("+", self)
-        self.button_zoom_in.setGeometry(140, 550, 50, 30)
+        self.button_zoom_in.setGeometry(140, 710, 50, 30)
         self.button_zoom_in.clicked.connect(self.zoom_in)
 
         self.button_zoom_out = QPushButton("-", self)
-        self.button_zoom_out.setGeometry(200, 550, 50, 30)
+        self.button_zoom_out.setGeometry(200, 710, 50, 30)
         self.button_zoom_out.clicked.connect(self.zoom_out)
 
         # Selector de esquema de color
         self.color_combo = QComboBox(self)
-        self.color_combo.setGeometry(270, 550, 150, 30)
+        self.color_combo.setGeometry(270, 710, 120, 30)
         self.color_combo.addItems([
             "Fuego", "Océano", "Arcoíris", "Neón", "Cósmico", 
-            "Atardecer", "Esmeralda", "Lavanda", "Psicodélico", "Ultra Violeta"
+             "Esmeralda", "Psicodélico"
         ])
         self.color_combo.currentIndexChanged.connect(self.change_color_scheme)
 
         # Selector de modo de color
         self.mode_combo = QComboBox(self)
-        self.mode_combo.setGeometry(440, 550, 150, 30)
+        self.mode_combo.setGeometry(400, 710, 120, 30)
         self.mode_combo.addItems(["Paleta Simple", "Interpolación Suave"])
         self.mode_combo.currentIndexChanged.connect(self.change_color_mode)
+
+        # Control deslizante para la intensidad del aura
+        self.aura_label = QLabel("Aura:", self)
+        self.aura_label.setGeometry(530, 710, 40, 30)
+        
+        self.aura_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.aura_slider.setGeometry(570, 710, 100, 30)
+        self.aura_slider.setRange(0, 100)  # Valores de 0 a 100
+        self.aura_slider.setValue(50)       # Valor inicial (50%)
+        self.aura_slider.valueChanged.connect(self.change_aura_intensity)
+
+        # Botón de exportación
+        self.button_export = QPushButton("Exportar", self)
+        self.button_export.setGeometry(680, 710, 100, 30)
+        self.button_export.clicked.connect(self.export_high_res)
 
         # Variables de fractal
         self.zoom = 300.0
         self.offset_x = -0.5
         self.offset_y = 0.0
-        self.max_iter = 500
+        self.max_iter = 200  # Valor inicial de iteraciones
+        self.aura_intensity = 1.0  # Intensidad del aura inicial (0-2)
 
         # Variables de movimiento
         self.is_dragging = False
@@ -133,12 +167,19 @@ class MandelbrotGUI(QMainWindow):
         # Inicializar paleta
         self.create_palette()
         
+        # Actualizar el fractal al iniciar
+        self.update_fractal()
+        
+    def update_iterations(self):
+        """Actualiza el número de iteraciones cuando cambia el valor del SpinBox."""
+        self.max_iter = self.iterations_spinbox.value()
         self.update_fractal()
 
-        self.button_export = QPushButton("Exportar", self)
-        self.button_export.setGeometry(610, 550, 100, 30)
-        self.button_export.clicked.connect(self.export_high_res)
-
+    def change_aura_intensity(self):
+        """Actualiza la intensidad del aura cuando cambia el valor del deslizador."""
+        # Convertir el valor del deslizador (0-100) a un rango de intensidad útil (0-2)
+        self.aura_intensity = self.aura_slider.value() / 50.0
+        self.update_fractal()
 
     def create_palette(self):
         """Crea una paleta de colores basada en el esquema seleccionado."""
@@ -186,57 +227,33 @@ class MandelbrotGUI(QMainWindow):
                     b = int(255)
                 self.palette.append((r, g, b))
         
-        elif self.color_scheme == 5:  # Atardecer
-            for i in range(self.palette_size):
-                t = i / (self.palette_size - 1)
-                r = int(min(255, 200 + t * 55))
-                g = int(100 * t)
-                b = int(50 + 150 * (1 - t))
-                self.palette.append((r, g, b))
         
-        elif self.color_scheme == 6:  # Esmeralda
+        elif self.color_scheme == 5:  # Esmeralda
             for i in range(self.palette_size):
                 t = i / (self.palette_size - 1)
-                r = int(t * 100)
+                r = int(t * 200)
                 g = int(min(255, t * 2 * 255))
                 b = int(t * 150)
                 self.palette.append((r, g, b))
         
-        elif self.color_scheme == 7:  # Lavanda
-            for i in range(self.palette_size):
-                t = i / (self.palette_size - 1)
-                r = int(150 + t * 105)
-                g = int(100 + t * 50)
-                b = int(200 + t * 55)
-                self.palette.append((r, g, b))
-        
-        elif self.color_scheme == 8:  # Psicodélico
+        elif self.color_scheme == 6:  # Psicodélico
             for i in range(self.palette_size):
                 t = i / (self.palette_size - 1)
                 phase = 6 * t
                 
                 if phase < 1:
-                    r, g, b = 255, int(phase * 255), 0
+                    r, g, b = 10, int(phase * 155), 0
                 elif phase < 2:
-                    r, g, b = int((2 - phase) * 255), 255, 0
+                    r, g, b = int((2 - phase) * 155), 225, 0
                 elif phase < 3:
-                    r, g, b = 0, 255, int((phase - 2) * 255)
+                    r, g, b = 0, 255, int((phase - 2) * 225)
                 elif phase < 4:
-                    r, g, b = 0, int((4 - phase) * 255), 255
+                    r, g, b = 0, int((4 - phase) * 155), 225
                 elif phase < 5:
-                    r, g, b = int((phase - 4) * 255), 0, 255
+                    r, g, b = int((phase - 4) * 155), 0, 225
                 else:
-                    r, g, b = 255, 0, int((6 - phase) * 255)
+                    r, g, b = 0, 0, int((6 - phase) * 225)
                     
-                self.palette.append((r, g, b))
-        
-        elif self.color_scheme == 9:  # Ultra Violeta
-            for i in range(self.palette_size):
-                t = i / (self.palette_size - 1)
-                # Violeta profundo a rosa brillante
-                r = int(t * 128 + 127)
-                g = int(t * 20)
-                b = int(t * 128 + 127)
                 self.palette.append((r, g, b))
 
     def ask_iterations(self):
@@ -291,6 +308,20 @@ class MandelbrotGUI(QMainWindow):
         if event.button() == Qt.MouseButton.LeftButton:
             self.is_dragging = False
 
+    def wheelEvent(self, event):
+        """Detecta cuando el usuario gira la rueda del mouse para hacer zoom."""
+        # Obtener la dirección del giro de la rueda
+        delta = event.angleDelta().y()
+
+        # Ajustar el zoom según la dirección del giro
+        if delta > 0:
+            self.zoom *= 1.1  # Aumentar el zoom
+        else:
+            self.zoom /= 1.1  # Disminuir el zoom
+
+        # Actualizar el fractal
+        self.update_fractal()
+
     def generate_fractal(self, width, height, zoom=None, offset_x=None, offset_y=None):
         """Genera el fractal de Mandelbrot con los colores elegidos."""
         # Si no se proporcionan zoom y offset, usar los valores actuales
@@ -311,16 +342,16 @@ class MandelbrotGUI(QMainWindow):
         palette_array = np.array(self.palette, dtype=np.uint8)
         d_palette = cuda.to_device(palette_array)
 
-        # Configurar la ejecución del kernel CUDA
+        # Configuración de la cuadrícula CUDA
         threads_per_block = (16, 16)
         blocks_per_grid_x = (width + threads_per_block[0] - 1) // threads_per_block[0]
         blocks_per_grid_y = (height + threads_per_block[1] - 1) // threads_per_block[1]
         blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
 
-        # Ejecutar el kernel de Mandelbrot
-        mandelbrot_kernel[blocks_per_grid, threads_per_block](
-            d_image, width, height, zoom, offset_x, offset_y, 
-            self.max_iter, d_palette, len(self.palette), self.color_mode
+        # Llamada al kernel con aura
+        mandelbrot_kernel_with_aura[blocks_per_grid, threads_per_block](
+            d_image, width, height, zoom, offset_x, offset_y, self.max_iter, 
+            d_palette, self.palette_size, self.color_mode, self.aura_intensity
         )
 
         # Copiar la imagen de vuelta a la CPU
@@ -329,7 +360,7 @@ class MandelbrotGUI(QMainWindow):
 
     def update_fractal(self):
         """Actualiza el fractal en la interfaz gráfica."""
-        width, height = 800, 600
+        width, height = 900, 700
         try:
             fractal = self.generate_fractal(width, height)
             q_image = QImage(fractal.data, width, height, 3 * width, QImage.Format.Format_RGB888)
@@ -339,16 +370,16 @@ class MandelbrotGUI(QMainWindow):
             print(f"Error al generar el fractal: {e}")
 
     def export_high_res(self):
-        """Genera y guarda el fractal en una resolución extremadamente alta (20000x20000) sin alejarse."""
+        """Genera y guarda el fractal en una resolución alta."""
         # Definir la resolución deseada
-        export_width = 40000  # Ancho en píxeles
-        export_height = 40000  # Alto en píxeles
+        export_width = 4000  # Ancho en píxeles
+        export_height = 4000  # Alto en píxeles
         
         print(f"Generando fractal en resolución {export_width}x{export_height}")
         
         # Calcular la relación de escalado entre la resolución actual y la de exportación
-        scale_factor_width = export_width / 800  # Relación de ancho (800 es el ancho de la interfaz)
-        scale_factor_height = export_height / 600  # Relación de alto (600 es el alto de la interfaz)
+        scale_factor_width = export_width / 900  # Relación de ancho (900 es el ancho de la interfaz)
+        scale_factor_height = export_height / 700  # Relación de alto (700 es el alto de la interfaz)
         
         # Ajustar el zoom para mantener el mismo nivel de detalle
         high_res_zoom = self.zoom * min(scale_factor_width, scale_factor_height)
