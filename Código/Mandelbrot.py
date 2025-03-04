@@ -5,9 +5,7 @@ import numpy as np
 import sys
 from numba import cuda
 import colorsys
-import math
 
-# Configuración de la GPU
 @cuda.jit
 def mandelbrot_kernel_with_aura(image, width, height, zoom, offset_x, offset_y, max_iter, palette, palette_size, color_mode, aura_intensity):
     x, y = cuda.grid(2)
@@ -21,7 +19,6 @@ def mandelbrot_kernel_with_aura(image, width, height, zoom, offset_x, offset_y, 
     z_real, z_imag = 0.0, 0.0
     iter_count = 0
 
-    # Para coloración suave, necesitamos guardar la última magnitud de z
     z_mag_squared = 0.0
 
     while iter_count < max_iter and (z_real * z_real + z_imag * z_imag) < 4.0:
@@ -31,47 +28,37 @@ def mandelbrot_kernel_with_aura(image, width, height, zoom, offset_x, offset_y, 
         iter_count += 1
         z_mag_squared = z_real * z_real + z_imag * z_imag
 
-    # Si está dentro del conjunto, color negro
     if iter_count == max_iter:
         image[y, x, 0] = 0
         image[y, x, 1] = 0
         image[y, x, 2] = 0
         return
         
-    # Calculamos un valor suave para mejor transición de colores
     smooth_value = iter_count
     if iter_count < max_iter:
-        # Aproximación suave basada en la iteración final
         smooth_value = iter_count + 1.0 - min(1.0, z_mag_squared / 4.0)
         
-    # Factor de aura: más cercano al borde = más brillante
     aura_factor = 0.0
     if z_mag_squared > 0.0:
-        # Calcular qué tan cerca estamos del borde del conjunto
-        edge_proximity = min(1.0, z_mag_squared / 4.0)  # Valor entre 0 y 1
+        edge_proximity = min(1.0, z_mag_squared / 4.0) 
         
-        # Factor de brillo del aura - más fuerte cerca del borde, controlado por intensidad
         aura_factor = edge_proximity * aura_intensity
     
-    if color_mode == 0:  # Modo paleta simple
-        # Usar la paleta cíclicamente
+    if color_mode == 0:  
         color_index = int(iter_count % palette_size)
         r = palette[color_index][0]
         g = palette[color_index][1]
         b = palette[color_index][2]
         
-        # Aplicar aura (aumentar brillo cerca de los bordes)
         r = min(255, int(r + (255 - r) * aura_factor))
         g = min(255, int(g + (255 - g) * aura_factor))
         b = min(255, int(b + (255 - b) * aura_factor))
-    else:  # Modo suave
-        # Mapear a la paleta con interpolación
+    else:  
         t = smooth_value / max_iter
         index_float = t * (palette_size - 1)
         index = int(index_float)
         t_interp = index_float - index
         
-        # Interpolación entre colores de la paleta
         if index < palette_size - 1:
             r = int(palette[index][0] * (1.0 - t_interp) + palette[index + 1][0] * t_interp)
             g = int(palette[index][1] * (1.0 - t_interp) + palette[index + 1][1] * t_interp)
@@ -81,13 +68,10 @@ def mandelbrot_kernel_with_aura(image, width, height, zoom, offset_x, offset_y, 
             g = palette[index][1]
             b = palette[index][2]
             
-        # Aplicar aura con un enfoque más sutil para preservar los degradados
-        # Usamos multiplicación en lugar de suma para mantener los tonos de color
         r = min(255, int(r * (1.0 + aura_factor * 0.7)))
         g = min(255, int(g * (1.0 + aura_factor * 0.7)))
         b = min(255, int(b * (1.0 + aura_factor * 0.7)))
     
-    # Asignar color final a la imagen
     image[y, x, 0] = r
     image[y, x, 1] = g
     image[y, x, 2] = b
@@ -98,16 +82,14 @@ class MandelbrotGUI(QMainWindow):
         self.setWindowTitle("Conjunto de Mandelbrot")
         self.setGeometry(100, 100, 900, 750)
 
-        # Área de visualización del fractal
         self.label = QLabel(self)
         self.label.setGeometry(0, 0, 900, 700)
 
-        # Reemplazar el botón "Actualizar" con un QSpinBox
         self.iterations_spinbox = QSpinBox(self)
-        self.iterations_spinbox.setGeometry(20, 710, 100, 30)  # Posición: (x, y, ancho, alto)
-        self.iterations_spinbox.setRange(1, 5000)  # Rango de iteraciones (mínimo 10, máximo 5000)
-        self.iterations_spinbox.setValue(200)  # Valor inicial
-        self.iterations_spinbox.valueChanged.connect(self.update_iterations)  # Conectar al método de actualización
+        self.iterations_spinbox.setGeometry(20, 710, 100, 30)
+        self.iterations_spinbox.setRange(1, 5000) 
+        self.iterations_spinbox.setValue(200)  
+        self.iterations_spinbox.valueChanged.connect(self.update_iterations)  
 
         self.button_zoom_in = QPushButton("+", self)
         self.button_zoom_in.setGeometry(140, 710, 50, 30)
@@ -117,7 +99,6 @@ class MandelbrotGUI(QMainWindow):
         self.button_zoom_out.setGeometry(200, 710, 50, 30)
         self.button_zoom_out.clicked.connect(self.zoom_out)
 
-        # Selector de esquema de color
         self.color_combo = QComboBox(self)
         self.color_combo.setGeometry(270, 710, 120, 30)
         self.color_combo.addItems([
@@ -126,48 +107,40 @@ class MandelbrotGUI(QMainWindow):
         ])
         self.color_combo.currentIndexChanged.connect(self.change_color_scheme)
 
-        # Selector de modo de color
         self.mode_combo = QComboBox(self)
         self.mode_combo.setGeometry(400, 710, 120, 30)
         self.mode_combo.addItems(["Paleta Simple", "Interpolación Suave"])
         self.mode_combo.currentIndexChanged.connect(self.change_color_mode)
 
-        # Control deslizante para la intensidad del aura
         self.aura_label = QLabel("Aura:", self)
         self.aura_label.setGeometry(530, 710, 40, 30)
         
         self.aura_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.aura_slider.setGeometry(570, 710, 100, 30)
-        self.aura_slider.setRange(0, 100)  # Valores de 0 a 100
-        self.aura_slider.setValue(50)       # Valor inicial (50%)
+        self.aura_slider.setRange(0, 100)  
+        self.aura_slider.setValue(50)      
         self.aura_slider.valueChanged.connect(self.change_aura_intensity)
 
-        # Botón de exportación
         self.button_export = QPushButton("Exportar", self)
         self.button_export.setGeometry(680, 710, 100, 30)
         self.button_export.clicked.connect(self.export_high_res)
 
-        # Variables de fractal
         self.zoom = 300.0
         self.offset_x = -0.5
         self.offset_y = 0.0
-        self.max_iter = 200  # Valor inicial de iteraciones
-        self.aura_intensity = 1.0  # Intensidad del aura inicial (0-2)
+        self.max_iter = 200  
+        self.aura_intensity = 1.0  
 
-        # Variables de movimiento
         self.is_dragging = False
         self.last_mouse_pos = QPoint()
 
-        # Colores y paletas
         self.palette_size = 256
         self.palette = []
         self.color_scheme = 0
-        self.color_mode = 1  # Interpolación suave por defecto
+        self.color_mode = 1  
         
-        # Inicializar paleta
         self.create_palette()
         
-        # Actualizar el fractal al iniciar
         self.update_fractal()
         
     def update_iterations(self):
@@ -177,7 +150,6 @@ class MandelbrotGUI(QMainWindow):
 
     def change_aura_intensity(self):
         """Actualiza la intensidad del aura cuando cambia el valor del deslizador."""
-        # Convertir el valor del deslizador (0-100) a un rango de intensidad útil (0-2)
         self.aura_intensity = self.aura_slider.value() / 50.0
         self.update_fractal()
 
@@ -297,7 +269,6 @@ class MandelbrotGUI(QMainWindow):
             delta = event.position() - self.last_mouse_pos
             self.last_mouse_pos = event.position()
 
-            # Convertimos el desplazamiento del mouse en coordenadas del fractal
             self.offset_x -= delta.x() / self.zoom
             self.offset_y -= delta.y() / self.zoom
 
@@ -310,21 +281,18 @@ class MandelbrotGUI(QMainWindow):
 
     def wheelEvent(self, event):
         """Detecta cuando el usuario gira la rueda del mouse para hacer zoom."""
-        # Obtener la dirección del giro de la rueda
         delta = event.angleDelta().y()
 
-        # Ajustar el zoom según la dirección del giro
         if delta > 0:
-            self.zoom *= 1.1  # Aumentar el zoom
+            self.zoom *= 1.1 
         else:
-            self.zoom /= 1.1  # Disminuir el zoom
+            self.zoom /= 1.1  
 
         # Actualizar el fractal
         self.update_fractal()
 
     def generate_fractal(self, width, height, zoom=None, offset_x=None, offset_y=None):
         """Genera el fractal de Mandelbrot con los colores elegidos."""
-        # Si no se proporcionan zoom y offset, usar los valores actuales
         if zoom is None:
             zoom = self.zoom
         if offset_x is None:
@@ -332,29 +300,23 @@ class MandelbrotGUI(QMainWindow):
         if offset_y is None:
             offset_y = self.offset_y
 
-        # Crear una imagen vacía en NumPy
         image = np.zeros((height, width, 3), dtype=np.uint8)
         
-        # Copiar la imagen a la GPU
         d_image = cuda.to_device(image)
         
-        # Convertir la paleta a un array NumPy para CUDA
         palette_array = np.array(self.palette, dtype=np.uint8)
         d_palette = cuda.to_device(palette_array)
 
-        # Configuración de la cuadrícula CUDA
         threads_per_block = (16, 16)
         blocks_per_grid_x = (width + threads_per_block[0] - 1) // threads_per_block[0]
         blocks_per_grid_y = (height + threads_per_block[1] - 1) // threads_per_block[1]
         blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
 
-        # Llamada al kernel con aura
         mandelbrot_kernel_with_aura[blocks_per_grid, threads_per_block](
             d_image, width, height, zoom, offset_x, offset_y, self.max_iter, 
             d_palette, self.palette_size, self.color_mode, self.aura_intensity
         )
 
-        # Copiar la imagen de vuelta a la CPU
         image = d_image.copy_to_host()
         return image
 
@@ -371,30 +333,23 @@ class MandelbrotGUI(QMainWindow):
 
     def export_high_res(self):
         """Genera y guarda el fractal en una resolución alta."""
-        # Definir la resolución deseada
-        export_width = 4000  # Ancho en píxeles
-        export_height = 4000  # Alto en píxeles
+        export_width = 4000  
+        export_height = 4000  
         
         print(f"Generando fractal en resolución {export_width}x{export_height}")
         
-        # Calcular la relación de escalado entre la resolución actual y la de exportación
-        scale_factor_width = export_width / 900  # Relación de ancho (900 es el ancho de la interfaz)
-        scale_factor_height = export_height / 700  # Relación de alto (700 es el alto de la interfaz)
+        scale_factor_width = export_width / 900  
+        scale_factor_height = export_height / 700 
         
-        # Ajustar el zoom para mantener el mismo nivel de detalle
         high_res_zoom = self.zoom * min(scale_factor_width, scale_factor_height)
         
-        # Usar los mismos offsets que en la vista actual
         high_res_offset_x = self.offset_x
         high_res_offset_y = self.offset_y
         
-        # Generar el fractal en la resolución deseada con los parámetros ajustados
         image = self.generate_fractal(export_width, export_height, high_res_zoom, high_res_offset_x, high_res_offset_y)
 
-        # Convertir la imagen de NumPy a QImage
         qimage = QImage(image.data, export_width, export_height, 3 * export_width, QImage.Format.Format_RGB888)
         
-        # Pedir ubicación para guardar el archivo
         file_path, _ = QFileDialog.getSaveFileName(self, "Guardar imagen", "", "PNG Files (*.png);;All Files (*)")
         if file_path:
             qimage.save(file_path, "PNG")
